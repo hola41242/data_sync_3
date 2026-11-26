@@ -122,7 +122,7 @@
     }
   }
 
-  async function loadChunk(chunkName, isUrgent = false, preloadAhead = 4) {
+  async function loadChunk(chunkName, isUrgent = false, preloadAhead = 6) {
     if (fifoCache.has(chunkName)) {
       const entry = fifoCache.get(chunkName);
       entry.lastUsed = Date.now();
@@ -187,7 +187,7 @@
   }
 
   async function getAssetRecord(info) {
-    const entry = await loadChunk(info.chunk, true, 4);
+    const entry = await loadChunk(info.chunk, true, 6);
     return entry ? (entry.files.get(info.key) || null) : null;
   }
 
@@ -211,10 +211,12 @@
     if (!info) return false;
     const target = (el instanceof HTMLSourceElement && el.parentElement) ? el.parentElement : el;
     target._pendingStreamInfo = info;
+    target._streamingMedia = true;
     if (blobUrlCache.has(info.key)) {
       const bUrl = blobUrlCache.get(info.key);
       if (el instanceof HTMLSourceElement) origSrcDesc.set.call(el, bUrl);
       origSrcDesc.set.call(target, bUrl);
+      target._streamingMedia = false;
       origMediaLoad.call(target);
       return true;
     }
@@ -222,18 +224,31 @@
       if (bUrl && target._pendingStreamInfo === info) {
         if (el instanceof HTMLSourceElement) origSrcDesc.set.call(el, bUrl);
         origSrcDesc.set.call(target, bUrl);
+        target._streamingMedia = false;
         origMediaLoad.call(target);
         target.play().catch(() => {});
+      } else {
+        target._streamingMedia = false;
       }
-    }).catch(() => {});
+    }).catch(() => {
+      target._streamingMedia = false;
+    });
     return true;
   }
+
+  mediaProto.addEventListener('error', function(e) {
+    if (this._streamingMedia && this._pendingStreamInfo) {
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }
+  }, true);
 
   Object.defineProperty(mediaProto, 'src', {
     get: function() { return origSrcDesc.get.call(this); },
     set: function(val) {
       if (!patchMediaElement(this, val)) {
         this._pendingStreamInfo = null;
+        this._streamingMedia = false;
         origSrcDesc.set.call(this, val);
       }
     },
@@ -257,13 +272,16 @@
   };
 
   mediaProto.load = function() {
+    if (this._streamingMedia && this._pendingStreamInfo && !blobUrlCache.has(this._pendingStreamInfo.key)) {
+      return;
+    }
     const curSrc = this.getAttribute('src') || origSrcDesc.get.call(this);
     if (curSrc && patchMediaElement(this, curSrc)) return;
     return origMediaLoad.apply(this, arguments);
   };
 
-  for (let i = 0; i < Math.min(4, ALL_CHUNKS.length); i++) {
-    loadChunk(ALL_CHUNKS[i], false, 4).catch(() => {});
+  for (let i = 0; i < Math.min(6, ALL_CHUNKS.length); i++) {
+    loadChunk(ALL_CHUNKS[i], false, 6).catch(() => {});
   }
 
   window.fetch = async function(resource, init) {
